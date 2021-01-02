@@ -1,25 +1,8 @@
 /*
-Code based on Neil Kolban example for IDF: https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleScan.cpp
-Ported to Arduino ESP32 by Evandro Copercini and based on https://github.com/turlvo/KuKuMi/
-Additional work by Alexander Savychev https://github.com/save2love/mi-ble-mqtt
+  Code based on Neil Kolban example for IDF: https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleScan.cpp
+  Ported to Arduino ESP32 by Evandro Copercini and based on https://github.com/turlvo/KuKuMi/
+  Additional improvements by Alexander Savychev https://github.com/save2love/mi-ble-mqtt
 */
-#define WIFI_SSID     "SSID"
-#define WIFI_PASSWORD "qwerty12345"
-
-#define MQTT_SERVER   "192.168.0.1"
-#define MQTT_PORT     1883
-#define MQTT_GW_NAME  "BLE_Mi_to_MQTT"
-#define MQTT_PREFIX   "MI"
-// MQTT topics
-// /MI/12:34:56:78:90:ab/temp = XX.X
-// /MI/12:34:56:78:90:ab/humd = XX.X
-// /MI/12:34:56:78:90:ab/battery = XX
-
-#define PIN_LED   2
-
-#define SCAN_TIME   60 // seconds
-#define SLEEP_TIME  60 // seconds
-
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEScan.h>
@@ -31,6 +14,7 @@ Additional work by Alexander Savychev https://github.com/save2love/mi-ble-mqtt
 
 #include "soc/rtc_cntl_reg.h"
 #include "esp_system.h"
+#include "const.h"
 
 // WiFi & BT Instance
 WiFiMulti wifiMulti;
@@ -46,17 +30,17 @@ void IRAM_ATTR resetModule() {
 }
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-    bool tryGetServiceData(uint8_t uuid_len, uint8_t* payload, uint8_t length, uint8_t* data) {
+    uint8_t getServiceData(uint8_t uuid_len, uint8_t* payload, uint8_t length, uint8_t* data) {
       if (length < uuid_len)
-        return false;
+        return 0;
       if (length > uuid_len) {
         memcpy(data, payload + uuid_len, length - uuid_len);
-        return data[0] == 0x50 && data[1] == 0x20; // Signature
+        return length - uuid_len;
       }
-      return false;
+      return 0;
     }
 
-    bool tryParsePayload(uint8_t* payload, size_t payload_len, uint8_t* service_data) {
+    uint8_t tryParsePayload(uint8_t* payload, size_t payload_len, uint8_t* service_data) {
       int8_t length;
       uint8_t ad_type;
       uint8_t sizeConsumed = 0;
@@ -74,23 +58,16 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
 
           switch (ad_type) {
             case ESP_BLE_AD_TYPE_SERVICE_DATA: {  // 2 byte UUID
-                if (tryGetServiceData(2, payload, length, service_data))
-                  return true;
-                break;
+                return getServiceData(2, payload, length, service_data);
               }
 
             case ESP_BLE_AD_TYPE_32SERVICE_DATA: { // 4 byte UUID
-                if (tryGetServiceData(4, payload, length, service_data))
-                  return true;
-                break;
+                return getServiceData(4, payload, length, service_data);
               }
 
             case ESP_BLE_AD_TYPE_128SERVICE_DATA: { // 16 byte UUID
-                if (tryGetServiceData(16, payload, length, service_data))
-                  return true;
-                break;
+                return getServiceData(16, payload, length, service_data);
               }
-
           }
           payload += length;
         }
@@ -115,63 +92,142 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
         client.loop();
       }
       Serial.print(topic);
-      Serial.print(" = ");
+      Serial.print(F(" = "));
       Serial.print(value);
       Serial.println();
     }
 
-    void onResult(BLEAdvertisedDevice advertisedDevice)
-    {
-      if (advertisedDevice.haveName() && advertisedDevice.haveServiceData() && !advertisedDevice.getName().compare("MJ_HT_V1")) {
-        size_t len = advertisedDevice.getPayloadLength();
-        uint8_t* payload = advertisedDevice.getPayload();
-        uint8_t data[30];
+    void processData(XiaomiDevice device, uint8_t* payload, size_t len, char* addr) {
+      uint8_t data[30];
+      uint8_t raw_data_length = tryParsePayload(payload, len, data);
+      if (raw_data_length == 0) {
+        Serial.println(F("Skip! No service date"));
+        return;
+      }
 
-        digitalWrite(PIN_LED, HIGH);
+      bool has_data = data[0] & 0x40;
+      bool has_capability = data[0] & 0x20;
+      bool has_encryption = data[0] & 0x08;
 
-        if (!tryParsePayload(payload, len, data)) {
-          digitalWrite(PIN_LED, LOW);
-          return;
+      if (!has_data) {
+        Serial.println(F("Skip! Service data has no DATA flag"));
+        return;
+      }
+
+      if (has_encryption) {
+        Serial.println(F("Skip! Service data is encrypted"));
+        return;
+      }
+
+      /*static uint8_t last_frame_count = 0;
+        if (last_frame_count == data[4]) {
+        Serial.println(F("Skip! Duplicate data packet received"));
+        return;
+        }
+        last_frame_count = data[4];*/
+
+      // Check device signature
+      if (data[2] != device.sign1 || data[3] != device.sign2) {
+        Serial.println(F("Skip! Wrong device signature"));
+        return;
+      }
+
+      uint16_t temp, humd;
+      uint8_t bat;
+      char value[10];
+
+      uint8_t data_offset = has_capability ? 12 : 11;
+      raw_data_length = raw_data_length - data_offset;
+
+      while (raw_data_length > 0) {
+        if (data[data_offset + 1] != 0x10) {
+          Serial.println(F("Skip! Fixed byte (0x10) not found"));
+          break;
         }
 
-        char addr[20];
-        strcpy(addr, advertisedDevice.getAddress().toString().c_str());
+        const uint8_t value_length = data[data_offset + 2];
+        if ((value_length < 1) || (value_length > 4) || (raw_data_length < (3 + value_length))) {
+          Serial.printf("Skip! Value has wrong size (%d)!", value_length);
+          break;
+        }
 
-        uint16_t temp, humd;
-        uint8_t bat;
-        uint8_t flags = 0; // 1 - temperature, 2 - humidity, 4 - battery
-        char value[10];
+        const uint8_t value_type = data[data_offset + 0];
+        //const uint8_t *data = &data[data_offset + 3];
 
-        switch (data[11]) {
+        switch (data[data_offset]) {
           case 0x04:
-            temp = readValue(data, 15, 14);
+            temp = readValue(data, data_offset + 4, data_offset + 3);
             sprintf(value, "%.1f", temp / 10.0);
             publish(addr, "temp", value);
             break;
-            
+
           case 0x06:
-            humd = readValue(data, 15, 14);
+            humd = readValue(data, data_offset + 4, data_offset + 3);
             sprintf(value, "%.1f", humd / 10.0);
             publish(addr, "humd", value);
             break;
-            
+
           case 0x0A:
-            bat = data[14];
+            bat = data[data_offset + 3];
             sprintf(value, "%d", bat);
             publish(addr, "battery", value);
             break;
-            
+
           case 0x0D:
-            temp = readValue(data, 15, 14);
+            temp = readValue(data, data_offset + 4, data_offset + 3);
             sprintf(value, "%.1f", temp / 10.0);
             publish(addr, "temp", value);
-            humd = readValue(data, 17, 16);
+            humd = readValue(data, data_offset + 6, data_offset + 5);
             sprintf(value, "%.1f", humd / 10.0);
             publish(addr, "humd", value);
             break;
+
+          default:
+            Serial.print(F("Unknown value type: "));
+            Serial.print(data[data_offset]);
+            break;
         }
-        digitalWrite(PIN_LED, LOW);
+
+        raw_data_length -= 3 + value_length;
+        data_offset += 3 + value_length;
       }
+    }
+
+    uint8_t getDeviceIndexByName(std::string name) {
+      for (int i = 0; i < xiaomiDevicesSize; i++) {
+        if (!name.compare(xiaomiDevices[i].name)) {
+          return i;
+        }
+      }
+      return 0xFF;
+    }
+
+    void onResult(BLEAdvertisedDevice advertisedDevice)
+    {
+      if (!advertisedDevice.haveName() || !advertisedDevice.haveServiceData())
+        return;
+
+      std::string dname = advertisedDevice.getName();
+      Serial.print(F("Device: "));
+      Serial.print(dname.c_str());
+
+      uint8_t dIndex = getDeviceIndexByName(dname);
+      if (dIndex >= xiaomiDevicesSize) {
+        Serial.println(F(" Not supported!"));
+        return;
+      }
+      Serial.println(F(" OK!"));
+
+      XiaomiDevice device = xiaomiDevices[dIndex];
+
+      size_t len = advertisedDevice.getPayloadLength();
+      uint8_t* payload = advertisedDevice.getPayload();
+      char addr[20];
+      strcpy(addr, advertisedDevice.getAddress().toString().c_str());
+
+      digitalWrite(PIN_LED, HIGH);
+      processData(device, payload, len, addr);
+      digitalWrite(PIN_LED, LOW);
     }
 };
 
@@ -203,14 +259,14 @@ void WiFiEvent(WiFiEvent_t event)
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    Serial.print(F("Attempting MQTT connection..."));
 
     if (client.connect(MQTT_GW_NAME)) {
-      Serial.println("connected");
+      Serial.println(F("connected"));
     } else {
-      Serial.print("failed, rc=");
+      Serial.print(F("failed, rc="));
       Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      Serial.println(F(" try again in 5 seconds"));
       blinkLed(10, 500);
     }
   }
@@ -278,6 +334,6 @@ void loop() {
   delay(10);
   //esp_deep_sleep_start();
   esp_deep_sleep(1000000LL * SLEEP_TIME);
-  Serial.println("After deep sleep");
+  Serial.println(F("After deep sleep"));
 #endif
 }
