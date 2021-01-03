@@ -1,7 +1,17 @@
-# Xiaomi MI Temperature and Humidity Sensor BLE to MQTT gateway
-BLE to MQTT gateway for Xiaomi MI Temperature and Humidity Sensor with BLE and LCD
+# Temperature and Humidity BLE Sensors to MQTT gateway
+BLE to MQTT gateway for Xiaomi MI Temperature and Humidity Sensor with BLE and LCD and other devices
 
 ![Schema](/schema.png "Schema")
+
+## Supported devices
+* **LYWSDCGQ** _(Xiaomi Mijia Bluetooth Hygrometer Thermometer)_
+* **LYWSD02** _(Xiaomi Mijia Wireless Clock Indoor & Outdoor Hygrometer Thermometer)_
+* **LYWSD03MMC** _(XIAOMI Mijia Bluetooth Thermometer Hygrometer)_
+* **CGG1** _(ClearGrass Bluetooth Thermometer and Hygrometer)_
+* **CGD1** _(Cleargrass (Qingping) alarm clock)_
+* **MHO-C303** _(Xiaomi MiJia Miaomiaoce Wireless Hygrometer Therometer Clock)_
+* **MHO-C401** _(Xiaomi MiJia Miaomiaoce Bluetooth Hygrometer Thermometer)_
+* **JQJCY01YM** _(Xiaomi Honeywell Formaldehyde Sensor)_
 
 ## Increasing partition size to upload sketch
 
